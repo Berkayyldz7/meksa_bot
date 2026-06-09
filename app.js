@@ -2,6 +2,7 @@ const { MarketDataService } = require("./services/merket_data_service");
 const { FxuSettlementRecorder } = require("./services/fxu_settlement_recorder");
 const { SettlementAverage } = require("./services/SettlementAverage");
 const { MeksaApi } = require("./services/api_engine");
+const { ReporterService } = require("./services/reporter_service");
 
 const fs = require("fs");
 const fetch = require("node-fetch"); 
@@ -30,9 +31,8 @@ let lastReminderTime = 0;
 
 // 🚨 TELEGRAM KUMANDA KİLİDİ (Varsayılan olarak bot KAPALI başlar, Telegram'dan açılır)
 let isBotEnabledByAdmin = false; 
-let lastUpdateId = 0; // Gelen mesajları mükerrer okumamak için sayaç
+let lastUpdateId = 0; 
 
-// TELEGRAM'A MESAJ VE BUTON GÖNDEREN FONKSİYON
 async function sendTelegramMessage(text) {
   const token = process.env.TELEGRAM_TOKEN;
   const chatId = process.env.TELEGRAM_CHAT_ID;
@@ -40,8 +40,6 @@ async function sendTelegramMessage(text) {
 
   try {
     const url = `https://api.telegram.org/bot${token}/sendMessage`;
-    
-    // Babanın ekranda göreceği kolay kumanda butonları
     const keyboard = {
       keyboard: [
         [{ text: "🟢 BOTU BAŞLAT (TRADE AKTİF)" }, { text: "🔴 BOTU DURDUR (TRADE PASİF)" }]
@@ -56,7 +54,7 @@ async function sendTelegramMessage(text) {
       body: JSON.stringify({ 
         chat_id: chatId, 
         text: `🤖 Meksa Bot: ${text}`,
-        reply_markup: keyboard // Butonları mesaja bağlıyoruz
+        reply_markup: keyboard 
       }),
     });
   } catch (err) {
@@ -64,7 +62,6 @@ async function sendTelegramMessage(text) {
   }
 }
 
-// TELEGRAM'DAN GELEN KOMUTLARI (BUTONLARI) DİNLEYEN FONKSİYON
 async function checkTelegramCommands() {
   const token = process.env.TELEGRAM_TOKEN;
   if (!token) return;
@@ -77,11 +74,9 @@ async function checkTelegramCommands() {
     if (result.ok && result.result.length > 0) {
       for (const update of result.result) {
         lastUpdateId = update.update_id;
-
         const messageText = update.message?.text;
         const incomingChatId = String(update.message?.chat?.id);
 
-        // Güvenlik: Sadece .env dosyasındaki Chat ID'den gelen komutları dinle (Yabancılar kontrol edemesin)
         if (incomingChatId !== String(process.env.TELEGRAM_CHAT_ID)) continue;
 
         if (messageText === "🟢 BOTU BAŞLAT (TRADE AKTİF)" || messageText === "/start") {
@@ -103,10 +98,10 @@ async function checkTelegramCommands() {
   }
 }
 
-// MATRİKS SOKET HATALARINI TELEGRAM'A BAĞLAMA OPERASYONU
+// SOKET KOPMA ALARMLARI
 marketData.onError((errorMessage) => {
   if (!isMatriksErrorNotified) {
-    sendTelegramMessage(`🚨 KRİTİK ALARM: Matriks Bağlantısı Sağlanamadı veya Koptu! Arıza Detayı: ${errorMessage}\n⚠️ İşlemler veri gelene kadar askıya alındı. Açık pozisyonunuz varsa manuel takip edin!`);
+    sendTelegramMessage(`🚨 KRİTİK ALARM: Matriks Bağlantısı Sağlanamadı veya Koptu! Arıza Detayı: ${errorMessage}\n⚠️ İşlemler askıya alındı.`);
     isMatriksErrorNotified = true; 
     lastReminderTime = Date.now(); 
   }
@@ -114,43 +109,42 @@ marketData.onError((errorMessage) => {
 
 marketData.onConnect(() => {
   if (isMatriksErrorNotified) {
-    sendTelegramMessage(`✅ BİLGİ: Matriks soket bağlantısı başarıyla onarıldı, veri akışı taze. Bot komut bekliyor.`);
+    sendTelegramMessage(`✅ BİLGİ: Matriks soket bağlantısı başarıyla onarıldı, veri akışı taze.`);
     isMatriksErrorNotified = false; 
   }
 });
 
-// Matriks canlı veri akışını başlat
 marketData.start();
 
-// 5 günlük uzlaşı fiyatlarını kaydeden kaydediciyi başlat
+// 💡 GÜNLÜK RAPORLAMA SERVİSİ (Ayrı servis olarak tetikleniyor)
+const reporter = new ReporterService(marketData);
+reporter.start();
+
 const recorder = new FxuSettlementRecorder(marketData, settlementAverage, {
-  intervalMs: 10000,
+  intervalMs: 30000,
   outputFile: "./data/fxu-settlements.json",
 });
-recorder.start();
 
-// Bot sunucuda ilk açıldığında babana butonları gönderir ve onay bekler
+// Cumartesi (6) veya Pazar (0) ise recorder hiç çalışmasın, çöp veri yazmasın:
+const currentDay = new Date().getDay();
+if (currentDay !== 0 && currentDay !== 6) {
+  recorder.start(); 
+} else {
+  console.log("⚠️ [REKORDER KİLİDİ] Hafta sonu olduğu için uzlaşı kaydedici başlatılmadı.");
+}
+
 sendTelegramMessage("Sunucuda başarıyla ayağa kalktım. Trade işlemini başlatmak için lütfen aşağıdaki yeşil butona basın! 🔌");
-
-// Telegram komutlarını her 1 saniyede bir kontrol et (Kumanda gecikmesin)
 setInterval(checkTelegramCommands, 1000);
 
-// ANA STRATEJİ DÖNGÜSÜ (Her 2 saniyede bir döner)
+// ANA STRATEJİ DÖNGÜSÜ
 setInterval(async () => {
-  // 🟢 KUMANDA KONTROLÜ: Eğer baban Telegram'dan durdurduysa stratejiyi HİÇ ÇALIŞTIRMA
-  if (!isBotEnabledByAdmin) {
-    return; 
-  }
-
-  if (isTradeRunning) {
-    console.log("[KİLİT] İçeride bekleyen işlem var, bu tur pas geçildi.");
-    return;
-  }
+  if (!isBotEnabledByAdmin) return; 
+  if (isTradeRunning) return;
 
   const fxuSnapshot = marketData.getFxuSnapshotWithTime();
   const avg5 = settlementAverage.getAverage5();
 
-  // 1. KORUMA: MATRİKS'TEN VERİ HİÇ GELMİYORSA
+  // 🚨 GERİ GELEN KORUMA 1: MATRİKS'TEN VERİ HİÇ GELMİYORSA YA DA HAZIR DEĞİLSE
   if (!fxuSnapshot || avg5 == null) {
     console.log("FXU veya avg5 verisi henüz hazır değil, bekleniyor...");
     if (!isMatriksErrorNotified) {
@@ -158,7 +152,7 @@ setInterval(async () => {
       isMatriksErrorNotified = true;
       lastReminderTime = Date.now();
     } else {
-      if (Date.now() - lastReminderTime > 300000) {
+      if (Date.now() - lastReminderTime > 300000) { // 5 dakikada bir hatırlatır
         sendTelegramMessage(`⚠️ HATIRLATMA: Matriks veri akışı hala sağlanamadı. Bot beklemede. Lütfen pozisyonlarınızı elinizle kontrol edin!`);
         lastReminderTime = Date.now();
       }
@@ -166,7 +160,7 @@ setInterval(async () => {
     return;
   }
 
-  // 2. KORUMA: VERİ AKIŞI ZAMAN AŞIMI (BAYAT VERİ) KONTROLÜ
+  // 🚨 GERİ GELEN KORUMA 2: VERİ AKIŞI ZAMAN AŞIMI (BAYAT VERİ) KONTROLÜ
   const maxAgeMs = 10000;
   const isFxuFresh = (Date.now() - fxuSnapshot.receivedAt) < maxAgeMs;
 
@@ -185,11 +179,22 @@ setInterval(async () => {
     return;
   }
 
+  // Eğer bağlantılar düzeldiyse hata bayrağını indiriyoruz
+  if (isMatriksErrorNotified) {
+    sendTelegramMessage(`✅ BİLGİ: Matriks canlı veri akışı normale döndü, pazar taranıyor.`);
+    isMatriksErrorNotified = false;
+  }
+
   const fxuLast = Number(fxuSnapshot.data.last);
   const settlementAverage5 = Number(avg5);
 
-  if (!Number.isFinite(fxuLast) || !Number.isFinite(settlementAverage5)) {
-    console.log("FXU last veya avg5 sayısal değil, tur atlandı.");
+  if (!Number.isFinite(fxuLast) || !Number.isFinite(settlementAverage5)) return;
+
+  // 🛡️ ADIM 2: CANLI TEMİNAT OKUMA VE SAFE BLOCK
+  const currentInitialMargin = fxuSnapshot.data.initialMargin ? Number(fxuSnapshot.data.initialMargin) : null;
+
+  if (!currentInitialMargin || currentInitialMargin <= 0) {
+    console.log("⚠️ [KRİTİK PAS] Canlı teminat okunamadı!");
     return;
   }
 
@@ -210,90 +215,148 @@ setInterval(async () => {
     }
 
     if (localPositionSide !== null && localPositionSide !== realPositionSide) {
-      console.log(`[SENKRONİZASYON] ${localPositionSide} emri iletildi ancak Meksa hala ${realPositionSide} gösteriyor. API güncellemesi bekleniyor...`);
-      return; 
-    }
+        console.log(`[SENKRONİZASYON] ${localPositionSide} emri iletildi ancak Meksa hala ${realPositionSide} gösteriyor. API güncellemesi bekleniyor...`);
+        return; 
+    } 
+    
 
     if (localPositionSide !== null && localPositionSide === realPositionSide) {
-       console.log(`[SENKRONİZASYON] Borsa sistemi güncellendi. Mevcut Pozisyon: ${realPositionSide}`);
        sendTelegramMessage(`Borsa ile senkronizasyon sağlandı. Güncel Pozisyon: ${realPositionSide} ✅`);
        localPositionSide = null;
     }
 
     const positionSide = realPositionSide;
     
+    // 🛡️ ADIM 1: MEKSA'DAN SAF ÇEKİLEBİLİR BAKİYEYİ ÇEKİYORUZ
+    const meksaAccount = await api.getViopAccountDetails();
+    const freeNakit = Number(meksaAccount.cekilebilirTeminat || 0); 
+
+    // 🛡️ ADIM 4: MARGİNCALL'A DÜŞMEMEK İÇİN GÜVENLİ KONTRAT MALİYETİ (Teminat * 1.5)
+    const safeContractCost = currentInitialMargin * 1.25;
+
+    // 🛡️ ADIM 3: SIFIRDAN BİR YÖNE GİRERKEN BAZ ALINACAK MAKSİMUM SAFE LOT MİKTARI
+    const max_safe_lot_miktari = Math.floor(freeNakit / safeContractCost);
+
+    // --- SENARYO A: SİNYAL LONG (Fiyat Ortalamanın Üstünde) ---
     if (fxuLast > settlementAverage5) {
-      if (positionSide === "NONE") {
-        console.log("Sinyal LONG: Pozisyon yok. 1 adet LONG emri gönderiliyor...");
-        localPositionSide = "LONG"; 
-
-        await api.placeViopBuyOrder({
-          sozlesme: process.env.VIOP_SOZLESME,
-          quantity: 1,
-          orderType: "PKP",
-          duration: "GUN",
-          aksamSeansi: 0,
-        });
-        console.log("-> 1 Adet LONG emir Meksa'ya başarıyla iletildi.");
-        sendTelegramMessage(`Sinyal LONG 📈: Pozisyon yoktu, Meksa'ya 1 adet LONG emir iletildi.`);
+      if (positionSide !== "LONG") {
         
-      } else if (positionSide === "SHORT") {
-        console.log("Sinyal LONG: Mevcut SHORT pozisyon var. Kapatmak ve LONG açmak için 2 adet LONG emri gönderiliyor...");
-        localPositionSide = "LONG"; 
+        // 1. İHTİMAL: HİÇ POZİSYON YOKSA
+        if (positionSide === "NONE") {
+          if (max_safe_lot_miktari < 1) {
+            console.log(`❌ [BAKİYE YETERSİZ] LONG sinyali var ama çekilebilir nakit (${freeNakit} TL) güvenli 1 lot maliyetini (${safeContractCost} TL) karşılamıyor!`);
+            isTradeRunning = false;
+            return;
+          }
 
-        await api.placeViopBuyOrder({
-          sozlesme: process.env.VIOP_SOZLESME,
-          quantity: 2,
-          orderType: "PKP",
-          duration: "GUN",
-          aksamSeansi: 0,
-        });
-        console.log("-> SHORT kapatıldı ve 1 adet LONG pozisyon açıldı.");
-        sendTelegramMessage(`Sinyal LONG 📈: Mevcut SHORT pozisyon kapatıldı ve 2 adet LONG emir ile geçiş tetiklendi.`);
+          await sendTelegramMessage(
+            `📊 EMİR TETİKLENDİ (Yön: LONG 📈)\n\n` +
+            `🔹 Canlı Başlangıç Teminatı: ${currentInitialMargin} TL\n` +
+            `🔹 Hesapta Boşta Çekilebilir Bakiye: ${freeNakit} TL\n` +
+            `🛡️ Kontrat Başı Güvenli Maliyet (x1.25): ${safeContractCost} TL\n` +
+            `🚀 İşleme Girilecek Güvenli Kontrat Sayısı: ${max_safe_lot_miktari} Lot`
+          );
+
+          localPositionSide = "LONG"; 
+          await api.placeViopBuyOrder({
+            sozlesme: process.env.VIOP_SOZLESME,
+            quantity: max_safe_lot_miktari,
+            orderType: "PKP",
+            duration: "GUN", 
+            aksamSeansi: 0,
+          });
+        } 
         
-      } else if (positionSide === "LONG") {
+        // 2. İHTİMAL: TERS SİNYAL! (İLK GÜVENLİ LOTUN 2 KATI EMİR ÇAK!)
+        else if (positionSide === "SHORT") {
+          const reverseQuantity = max_safe_lot_miktari * 2; 
+
+          if (reverseQuantity < 2) {
+            isTradeRunning = false;
+            return;
+          }
+
+          await sendTelegramMessage(
+            `🚨 [TERSE TAKLA -> LONG 📈]\n\n` +
+            `🚀 Strateji Gereği Mevcut Pozisyonu Kapatıp Terse Geçmek İçin ${reverseQuantity} Lot (${max_safe_lot_miktari} x 2) Emir Gönderiliyor.`
+          );
+
+          localPositionSide = "LONG"; 
+          await api.placeViopBuyOrder({
+            sozlesme: process.env.VIOP_SOZLESME,
+            quantity: reverseQuantity, 
+            orderType: "PKP",
+            duration: "GUN", 
+            aksamSeansi: 0,
+          });
+        }
+      } else {
+        // 🚨 EKLEMEYİ UNUTTUĞUMUZ LOG GERİ GELDİ: Zaten LONG yöndeysek
         console.log("Sinyal LONG: Zaten LONG pozisyondayız. Yeni işlem yapılmadı.");
       }
     }
 
+    // --- SENARYO B: SİNYAL SHORT (Fiyat Ortalamanın Altında) ---
     else if (fxuLast < settlementAverage5) {
-      if (positionSide === "NONE") {
-        console.log("Sinyal SHORT: Pozisyon yok. 1 adet SHORT emri gönderiliyor...");
-        localPositionSide = "SHORT";
+      if (positionSide !== "SHORT") {
 
-        await api.placeViopSellOrder({
-          sozlesme: process.env.VIOP_SOZLESME,
-          quantity: 1,
-          orderType: "PKP",
-          duration: "GUN",
-          aksamSeansi: 0,
-        });
-        console.log("-> 1 Adet SHORT emir Meksa'ya başarıyla iletildi.");
-        sendTelegramMessage(`Sinyal SHORT 📉: Pozisyon yoktu, Meksa'ya 1 adet SHORT emir iletildi.`);
-        
-      } else if (positionSide === "LONG") {
-        console.log("Sinyal SHORT: Mevcut LONG pozisyon var. Kapatmak ve SHORT açmak için 2 adet SHORT emri gönderiliyor...");
-        localPositionSide = "SHORT";
+        // 1. İHTİMAL: HİÇ POZİSYON YOKSA
+        if (positionSide === "NONE") {
+          if (max_safe_lot_miktari < 1) {
+            console.log(`❌ [BAKİYE YETERSİZ] SHORT sinyali var ama çekilebilir nakit (${freeNakit} TL) güvenli 1 lot maliyetini (${safeContractCost} TL) karşılamıyor!`);
+            isTradeRunning = false;
+            return;
+          }
 
-        await api.placeViopSellOrder({
-          sozlesme: process.env.VIOP_SOZLESME,
-          quantity: 2,
-          orderType: "PKP",
-          duration: "GUN",
-          aksamSeansi: 0,
-        });
-        console.log("-> LONG kapatıldı ve 1 adet SHORT pozisyon açıldı.");
-        sendTelegramMessage(`Sinyal SHORT 📉: Mevcut LONG pozisyon kapatıldı ve 2 adet SHORT emir ile geçiş tetiklendi.`);
+          await sendTelegramMessage(
+            `📊 EMİR TETİKLENDİ (Yön: SHORT 📉)\n\n` +
+            `🔹 Canlı Başlangıç Teminatı: ${currentInitialMargin} TL\n` +
+            `🔹 Hesapta Boşta Çekilebilir Bakiye: ${freeNakit} TL\n` +
+            `🛡️ Kontrat Başı Güvenli Maliyet (x1.25): ${safeContractCost} TL\n` +
+            `🚀 İşleme Girilecek Güvenli Kontrat Sayısı: ${max_safe_lot_miktari} Lot`
+          );
+
+          localPositionSide = "SHORT";
+          await api.placeViopSellOrder({
+            sozlesme: process.env.VIOP_SOZLESME,
+            quantity: max_safe_lot_miktari,
+            orderType: "PKP",
+            duration: "GUN", 
+            aksamSeansi: 0,
+          });
+        } 
         
-      } else if (positionSide === "SHORT") {
+        // 2. İHTİMAL: TERS SİNYAL! (İLK GÜVENLİ LOTUN 2 KATI EMİR ÇAK!)
+        else if (positionSide === "LONG") {
+          const reverseQuantity = max_safe_lot_miktari * 2; 
+
+          if (reverseQuantity < 2) {
+            isTradeRunning = false;
+            return;
+          }
+
+          await sendTelegramMessage(
+            `🚨 [TERSE TAKLA -> SHORT 📉]\n\n` +
+            `🚀 Strateji Gereği Mevcut Pozisyonu Kapatıp Terse Geçmek İçin ${reverseQuantity} Lot (${max_safe_lot_miktari} x 2) Emir Gönderiliyor.`
+          );
+
+          localPositionSide = "SHORT";
+          await api.placeViopSellOrder({
+            sozlesme: process.env.VIOP_SOZLESME,
+            quantity: reverseQuantity, 
+            orderType: "PKP",
+            duration: "GUN", 
+            aksamSeansi: 0,
+          });
+        }
+      }else {
+        // 🚨 EKLEMEYİ UNUTTUĞUMUZ LOG GERİ GELDİ: Zaten SHORT yöndeysek
         console.log("Sinyal SHORT: Zaten SHORT pozisyondayız. Yeni işlem yapılmadı.");
       }
-    } else {
-      console.log("FXU son fiyatı ortalamaya tam eşit. İşlem yapılmadı.");
     }
 
   } catch (error) {
-    console.error("🚨 Emir Strateji Hatası (Meksa Bağlantısı):", error.message);
+    console.error("🚨 Emir Strateji Hatası:", error.message);
     sendTelegramMessage(`🚨 KRİTİK MEKSA HATASI: ${error.message}`);
     localPositionSide = null; 
   } finally {

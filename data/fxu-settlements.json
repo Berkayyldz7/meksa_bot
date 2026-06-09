@@ -66,5 +66,47 @@
     "settlement": 15774,
     "updateDate": "2026-06-01T18:09:59.000+03",
     "recordedAt": "2026-06-01T15:15:06.422Z"
+  },
+  {
+    "date": "2026-06-02",
+    "symbolCode": "F_XU0300626",
+    "settlement": 16457,
+    "updateDate": "2026-06-02T18:09:59.000+03",
+    "recordedAt": "2026-06-02T15:15:02.056Z"
+  },
+  {
+    "date": "2026-06-03",
+    "symbolCode": "F_XU0300626",
+    "settlement": 16087,
+    "updateDate": "2026-06-03T18:09:59.000+03",
+    "recordedAt": "2026-06-03T15:15:07.574Z"
+  },
+  {
+    "date": "2026-06-04",
+    "symbolCode": "F_XU0300626",
+    "settlement": 15922,
+    "updateDate": "2026-06-04T18:09:59.000+03",
+    "recordedAt": "2026-06-04T15:15:01.465Z"
+  },
+  {
+    "date": "2026-06-05",
+    "symbolCode": "F_XU0300626",
+    "settlement": 15602,
+    "updateDate": "2026-06-05T18:09:56.000+03",
+    "recordedAt": "2026-06-05T15:15:06.973Z"
+  },
+  {
+    "date": "2026-06-08",
+    "symbolCode": "F_XU0300626",
+    "settlement": 15866,
+    "updateDate": "2026-06-05T22:59:59.000+03",
+    "recordedAt": "2026-06-08T15:15:02.772Z"
+  },
+  {
+    "date": "2026-06-09",
+    "symbolCode": "F_XU0300626",
+    "settlement": 15724,
+    "updateDate": "2026-06-05T22:59:59.000+03",
+    "recordedAt": "2026-06-09T15:15:08.137Z"
   }
 ]
